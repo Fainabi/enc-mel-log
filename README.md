@@ -198,7 +198,7 @@ cmake --build build --target cpp_complex_e2e -j"$(nproc)"
 | 输入 | 无外部输入。程序内生成 64 帧合成复信号（`cpp_complex_e2e.cpp:238-243`），`x[b*1024+h*512+i] = (0.001*sin(0.01*i+0.07*b), 0.001*cos(0.013*i+0.11*b))`，i < 400 |
 | 环境变量 | `E52_BENCH`（`:236`）。设为任意非空值则跳过每一级的 RMSE probe，只留最终结果和分段计时 |
 | 输出 | 逐级 `stage <name> level=.. rmse=.. maxerr=..`；`input <name> min/max/mean/std/neg/over1` 统计；13 行 `dct_row k=..`；`runtime_s=.. level=.. rmse=.. maxerr=..`；`bench_stage_s projection=.. mel=.. cheb=.. dct=..`；4 行 `slot<i>=(..) exp=(..)` |
-| 耗时 | **密文求值 43.800 s**（有日志：`../results/cpp_complex_fft3_64.log`）。这个数字只覆盖求值，**不含** 建上下文、KeyGen（511 个正向 + 12 个反向旋转密钥 + 共轭 automorphism 密钥）、以及 CPU 侧的 512×512 稠密复矩阵连乘（`mm()`，`:29-36`，被调用约 12 次）与全部明文对角线编码。整个进程的实际运行时间明显长于 43.8 s，本仓库没有测过这个总时间 |
+| 耗时 | **密文求值 43.800 s**（有日志：`../results/cpp_complex_fft3_64.log`）。这个数字只覆盖求值，**不含** 建上下文、KeyGen（511 个正向 + 12 个反向旋转密钥 + 共轭 automorphism 密钥）、以及 CPU 侧的 512×512 稠密复矩阵连乘（`mm()`，`:29-36`，共调用 13 次）与全部明文对角线编码。整个进程的实际运行时间明显长于 43.8 s，本仓库没有测过这个总时间 |
 | 备注 | 输出的 `level=` 是 OpenFHE 的内部层索引，不是论文里说的「剩余层数」 |
 
 ### 2. `cpp_complex_ops` — 复数原语的 smoke test
