@@ -1,0 +1,46 @@
+# build output
+build/
+build-*/
+out/
+cmake-build-*/
+
+# CMake artifacts (in case someone configures in-source)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+compile_commands.json
+install_manifest.txt
+_deps/
+
+# object / binary files
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.exe
+cpp_complex_e2e
+cpp_complex_ops
+cpp_complex_smoke
+cpp_dct_small
+cpp_inv2_placement
+cpp_linear_smoke
+cpp_mv_unit
+cpp_real_dct
+
+# run output
+*.log
+logs/
+*.json
+
+# editor / OS temporaries
+*~
+*.swp
+*.swo
+.vscode/
+.idea/
+.cache/
+.DS_Store
