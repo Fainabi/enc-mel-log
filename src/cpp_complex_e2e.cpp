@@ -527,8 +527,13 @@ int main() {
   }
   printf("runtime_s=%.3f level=%zu rmse=%.6e maxerr=%.6e\n", sec,
          out->GetLevel(), std::sqrt(se / 13), me);
+  const double real_frames = 2.0 * static_cast<double>(LANES);
+  printf("throughput_fps=%.6f\n", real_frames / sec);
   printf("bench_stage_s projection=%.6f mel=%.6f cheb=%.6f dct=%.6f\n",
          t_proj, t_mel, t_cheb, t_dct);
+  printf("bench_stage_fps projection=%.6f mel=%.6f cheb=%.6f dct=%.6f\n",
+         real_frames / t_proj, real_frames / t_mel, real_frames / t_cheb,
+         real_frames / t_dct);
   for (int i = 0; i < 4; i++)
     printf("slot%d=(%.6g,%.6g) exp=(%.6g,%.6g)\n", i, v[i * LANES].real(),
            v[i * LANES].imag(),
