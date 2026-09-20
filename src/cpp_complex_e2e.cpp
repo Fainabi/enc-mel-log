@@ -17,6 +17,8 @@ static constexpr size_t N = 512, WIN = 400, BLOCK = 1024, FRAMES = 64;
 #endif
 static constexpr size_t BLOCKS = FRAMES / 2;
 static constexpr size_t MV_N1 = 16;
+static constexpr size_t LANES = FRAMES;
+static constexpr size_t ROT_STRIDE = LANES;
 // Mel energies in the current normalized input are concentrated near 1e-4.
 // Include a small negative margin for CKKS noise instead of approximating the
 // fourth root over [0, 1], where the approximation is poorly conditioned near 0.
@@ -81,6 +83,8 @@ static std::vector<std::vector<std::vector<C>>> fft3() {
     for (size_t b = 0; b < bits; ++b) q = (q << 1) | ((k >> b) & 1);
     br[k][q] = 1.0;
   }
+  if (std::getenv("E52_REAL_INPUT"))
+    return out;
   std::vector<std::vector<C>> pack(N, std::vector<C>(N));
   pack[0][0] = 1.0;
   for (size_t k = 1; k < N / 2; ++k) {
@@ -93,11 +97,21 @@ static std::vector<std::vector<std::vector<C>>> fft3() {
 }
 static std::vector<std::vector<C>> mel() {
   std::vector<std::vector<C>> M(N, std::vector<C>(N));
+  const bool real_input = std::getenv("E52_REAL_INPUT") != nullptr;
+  auto bit_reverse = [](size_t k) {
+    size_t q = 0;
+    size_t bits = 0;
+    for (size_t m = N; m > 1; m >>= 1) ++bits;
+    for (size_t b = 0; b < bits; ++b)
+      q = (q << 1) | ((k >> b) & 1);
+    return q;
+  };
   for (int r = 0; r < 80; r++) {
     int lo = 1 + r * 3, mid = lo + 3, hi = mid + 3;
     for (int k = lo; k < hi && k < static_cast<int>(N); k++)
-      M[r][k] = (k <= mid) ? double(k - lo) / (mid - lo)
-                           : double(hi - k) / (hi - mid);
+      M[r][real_input ? bit_reverse(static_cast<size_t>(k)) : k] =
+          (k <= mid) ? double(k - lo) / (mid - lo)
+                     : double(hi - k) / (hi - mid);
   }
   return M;
 }
@@ -113,11 +127,11 @@ static void probe_rmse(const CryptoContext<DCRTPoly> &cc, const CT &ct,
                        const std::vector<C> &expected, const char *name) {
   Plaintext p;
   cc->Decrypt(ct, sk, &p);
-  p->SetLength(expected.size());
+  p->SetLength(cc->GetRingDimension() / 2);
   auto v = p->GetCKKSPackedValue();
   double se = 0.0, me = 0.0;
   for (size_t i = 0; i < expected.size(); ++i) {
-    double e = std::abs(v[i] - expected[i]);
+    double e = std::abs(v[i * LANES] - expected[i]);
     se += e * e;
     me = std::max(me, e);
   }
@@ -129,8 +143,12 @@ static std::vector<C> decrypt_values(const CryptoContext<DCRTPoly> &cc,
                                       const PrivateKey<DCRTPoly> &sk) {
   Plaintext p;
   cc->Decrypt(ct, sk, &p);
-  p->SetLength(N);
-  return p->GetCKKSPackedValue();
+  p->SetLength(cc->GetRingDimension() / 2);
+  auto all = p->GetCKKSPackedValue();
+  std::vector<C> lane(N);
+  for (size_t i = 0; i < N; ++i)
+    lane[i] = all[i * LANES];
+  return lane;
 }
 static void print_stats(const char *name, const std::vector<C> &v) {
   double minr = 1e300, maxr = -1e300, mean = 0, ss = 0;
@@ -155,7 +173,9 @@ static CT mv(const CryptoContext<DCRTPoly> &cc, CT x,
   baby[0] = x;
   auto dig = cc->EvalFastRotationPrecompute(x);
   for (size_t i = 1; i < n1; i++)
-    if (used_i[i]) baby[i] = cc->EvalFastRotation(x, i, 2 * cc->GetRingDimension(), dig);
+    if (used_i[i])
+      baby[i] = cc->EvalFastRotation(x, i * ROT_STRIDE,
+                                     2 * cc->GetRingDimension(), dig);
   CT acc;
   bool first = true;
   for (size_t k = 0; k < (N + n1 - 1) / n1; k++) {
@@ -174,7 +194,7 @@ static CT mv(const CryptoContext<DCRTPoly> &cc, CT x,
     if (!have)
       continue;
     if (k)
-      inner = cc->EvalRotate(inner, (int)(k * n1));
+      inner = cc->EvalRotate(inner, (int)(k * n1 * ROT_STRIDE));
     if (first) {
       acc = inner;
       first = false;
@@ -225,11 +245,12 @@ int main() {
   };
   // BSGS uses baby steps 1..MV_N1-1 and giant steps that are multiples of
   // MV_N1.  DCT additionally uses its signed direct-rotation offsets.
-  for (int32_t i = 1; i < static_cast<int32_t>(MV_N1); ++i) add_rk(i);
+  for (int32_t i = 1; i < static_cast<int32_t>(MV_N1); ++i)
+    add_rk(i * static_cast<int32_t>(ROT_STRIDE));
   for (int32_t i = static_cast<int32_t>(MV_N1); i < static_cast<int32_t>(N);
        i += static_cast<int32_t>(MV_N1))
-    add_rk(i);
-  add_rk(-80);
+    add_rk(i * static_cast<int32_t>(ROT_STRIDE));
+  add_rk(-80 * static_cast<int32_t>(ROT_STRIDE));
   cc->EvalRotateKeyGen(kp.secretKey, rk);
   uint32_t cj = 2 * cc->GetRingDimension() - 1;
   auto ck = cc->EvalAutomorphismKeyGen(kp.secretKey, {cj});
@@ -239,9 +260,11 @@ int main() {
   for (size_t b = 0; b < BLOCKS; ++b)
     for (size_t h = 0; h < 2; ++h)
       for (size_t i = 0; i < WIN; i++)
-        x[b * BLOCK + h * N + i] =
-            C(INPUT_GAIN * .001 * sin(.01 * i + .07 * b),
-              INPUT_GAIN * .001 * cos(.013 * i + .11 * b));
+        x[i * LANES + 2 * b + h] =
+            std::getenv("E52_REAL_INPUT")
+                ? C(INPUT_GAIN * .001 * sin(.01 * i + .07 * (4 * b + 2 * h)), 0.0)
+                : C(INPUT_GAIN * .001 * sin(.01 * i + .07 * (4 * b + 2 * h)),
+                    INPUT_GAIN * .001 * cos(.013 * i + .11 * (4 * b + 2 * h + 1)));
   auto ct = cc->Encrypt(kp.publicKey, cc->MakeCKKSPackedPlaintext(x));
   auto F = fft3();
   auto P = proj(), B = mel(), D = dct();
@@ -267,7 +290,7 @@ int main() {
         for (size_t h = 0; h < 2; ++h)
           for (size_t r = 0; r < N; r++) {
             size_t rr = (r + N - g) % N;
-            q[b * BLOCK + h * N + r] = M[rr][(rr + d) % N];
+          q[r * LANES + 2 * b + h] = M[rr][(rr + d) % N];
           }
       v[d] = cc->MakeCKKSPackedPlaintext(q);
     }
@@ -282,9 +305,9 @@ int main() {
   std::vector<C> mel_mask_v(S);
   for (size_t b = 0; b < BLOCKS; ++b)
     for (size_t h = 0; h < 2; ++h) {
-      const size_t base = b * BLOCK + h * N;
+      const size_t lane = 2 * b + h;
       for (size_t r = 0; r < 80; ++r) {
-        mel_mask_v[base + r] = C(1.0, 0.0);
+        mel_mask_v[r * LANES + lane] = C(1.0, 0.0);
       }
     }
   auto mel_mask = cc->MakeCKKSPackedPlaintext(mel_mask_v);
@@ -293,7 +316,7 @@ int main() {
   std::vector<C> ey(N);
   for (size_t r = 0; r < N; r++)
     for (size_t j = 0; j < N; j++)
-      ey[r] += P[r][j] * x[j];
+      ey[r] += P[r][j] * x[j * LANES];
   std::vector<C> e_re(N), e_im(N), e_re2(N), e_im2(N), e_q(N);
   for (size_t r = 0; r < N; r++) {
     e_re[r] = C(2.0 * ey[r].real(), 0.0);
@@ -350,6 +373,27 @@ int main() {
     printf(" total=%.6f\n", t_proj);
   }
   if (!bench) probe_rmse(cc, y, kp.secretKey, ey, "projection");
+  if (std::getenv("E52_GENERAL_CHECK")) {
+    Plaintext py;
+    cc->Decrypt(y, kp.secretKey, &py);
+    py->SetLength(S);
+    auto vy = py->GetCKKSPackedValue();
+    double se = 0.0, me = 0.0;
+    size_t count = 0;
+    for (size_t lane = 0; lane < LANES; ++lane) {
+      for (size_t r = 0; r < N; ++r) {
+        C exp = 0.0;
+        for (size_t j = 0; j < N; ++j)
+          exp += P[r][j] * x[j * LANES + lane];
+        const double e = std::abs(vy[r * LANES + lane] - exp);
+        se += e * e;
+        me = std::max(me, e);
+        ++count;
+      }
+    }
+    printf("general_projection_all_lanes rmse=%.6e maxerr=%.6e lanes=%zu\n",
+           std::sqrt(se / count), me, LANES);
+  }
   auto yc = conj(y);
   auto re = cc->EvalAdd(y, yc);
   auto im = cc->EvalSub(y, yc);
@@ -391,7 +435,7 @@ int main() {
   auto mi_packed = mi;
   // OpenFHE's positive rotation maps output slot r to input slot r+offset;
   // use -80 to move source slot r into destination slot r+80.
-  auto mi_shifted = cc->EvalRotate(mi_packed, -80);
+  auto mi_shifted = cc->EvalRotate(mi_packed, -80 * static_cast<int>(ROT_STRIDE));
   auto packed_mel = cc->EvalAdd(mr_packed, mi_shifted);
   cc->RescaleInPlace(packed_mel);
   if (!bench) {
@@ -410,7 +454,7 @@ int main() {
   // OpenFHE rotation convention, +80 maps destination slot r to source slot
   // r+80.  The next DCT linear transform performs the required rescale.
   auto cr = packed_cheb;
-  auto ci = cc->EvalRotate(packed_cheb, 80);
+  auto ci = cc->EvalRotate(packed_cheb, 80 * static_cast<int>(ROT_STRIDE));
   if (!bench) probe_rmse(cc, cr, kp.secretKey, e_cr, "cheb_re");
   if (!bench) probe_rmse(cc, ci, kp.secretKey, e_ci, "cheb_im");
   CT cii = std::make_shared<CiphertextImpl<DCRTPoly>>(*ci);
@@ -441,18 +485,19 @@ int main() {
   if (!bench) probe_rmse(cc, out, kp.secretKey, e_out, "dct_out");
   Plaintext c_dec;
   cc->Decrypt(c, kp.secretKey, &c_dec);
-  c_dec->SetLength(N);
+  c_dec->SetLength(S);
   auto c_val = c_dec->GetCKKSPackedValue();
   std::vector<C> dct_from_decoded_c(N);
   for (size_t r = 0; r < N; ++r)
-    for (size_t j = 0; j < N; ++j) dct_from_decoded_c[r] += D[r][j] * c_val[j];
+    for (size_t j = 0; j < N; ++j)
+      dct_from_decoded_c[r] += D[r][j] * c_val[j * LANES];
   if (!bench) probe_rmse(cc, out, kp.secretKey, dct_from_decoded_c, "dct_vs_decoded");
   auto sec =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
           .count();
   Plaintext dec;
   cc->Decrypt(out, kp.secretKey, &dec);
-  dec->SetLength(13);
+  dec->SetLength(S);
   auto v = dec->GetCKKSPackedValue();
   std::vector<double> qr(N), qi(N);
   for (size_t r = 0; r < N; r++) {
@@ -476,7 +521,7 @@ int main() {
   }
   double se = 0, me = 0;
   for (size_t i = 0; i < 13; i++) {
-    double e = std::abs(v[i] - eo[i]);
+    double e = std::abs(v[i * LANES] - eo[i]);
     se += e * e;
     me = std::max(me, e);
   }
@@ -485,7 +530,8 @@ int main() {
   printf("bench_stage_s projection=%.6f mel=%.6f cheb=%.6f dct=%.6f\n",
          t_proj, t_mel, t_cheb, t_dct);
   for (int i = 0; i < 4; i++)
-    printf("slot%d=(%.6g,%.6g) exp=(%.6g,%.6g)\n", i, v[i].real(), v[i].imag(),
+    printf("slot%d=(%.6g,%.6g) exp=(%.6g,%.6g)\n", i, v[i * LANES].real(),
+           v[i * LANES].imag(),
            eo[i].real(), eo[i].imag());
   return 0;
 }
