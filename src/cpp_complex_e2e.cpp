@@ -290,7 +290,7 @@ int main() {
         for (size_t h = 0; h < 2; ++h)
           for (size_t r = 0; r < N; r++) {
             size_t rr = (r + N - g) % N;
-          q[r * LANES + 2 * b + h] = M[rr][(rr + d) % N];
+            q[r * LANES + 2 * b + h] = M[rr][(rr + d) % N];
           }
       v[d] = cc->MakeCKKSPackedPlaintext(q);
     }
