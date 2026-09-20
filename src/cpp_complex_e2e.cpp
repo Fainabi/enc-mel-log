@@ -10,9 +10,19 @@
 using namespace lbcrypto;
 using C = std::complex<double>;
 using CT = Ciphertext<DCRTPoly>;
+#ifdef E52_SMALL
+static constexpr size_t N = 256, WIN = 200, BLOCK = 1024, FRAMES = 16;
+#else
 static constexpr size_t N = 512, WIN = 400, BLOCK = 1024, FRAMES = 64;
+#endif
 static constexpr size_t BLOCKS = FRAMES / 2;
 static constexpr size_t MV_N1 = 16;
+// Mel energies in the current normalized input are concentrated near 1e-4.
+// Include a small negative margin for CKKS noise instead of approximating the
+// fourth root over [0, 1], where the approximation is poorly conditioned near 0.
+static constexpr double CHEB_A = -1.0e-2;
+static constexpr double CHEB_B = 1.0e-2;
+static constexpr double INPUT_GAIN = 1.0;
 static std::vector<std::vector<C>> proj() {
   std::vector<std::vector<C>> M(N, std::vector<C>(N));
   for (size_t j = 0; j < WIN; j++) {
@@ -51,10 +61,11 @@ static std::vector<std::vector<std::vector<C>>> fft3() {
   std::vector<std::vector<std::vector<C>>> out;
   std::vector<std::vector<C>> cur(N, std::vector<C>(N));
   for (size_t i = 0; i < N; ++i) cur[i][i] = 1.0;
-  for (size_t g = 0; g < 3; ++g) {
+  for (size_t g = 0; g < stages.size(); g += 3) {
     std::vector<std::vector<C>> M(N, std::vector<C>(N));
     for (size_t i = 0; i < N; ++i) M[i][i] = 1.0;
-    for (size_t s = 0; s < 3; ++s) M = mm(stages[g * 3 + s], M);
+    for (size_t s = 0; s < 3 && g + s < stages.size(); ++s)
+      M = mm(stages[g + s], M);
     if (g == 0)
       for (size_t j = 0; j < WIN; ++j) {
         double w = .5 - .5 * cos(2 * M_PI * j / WIN);
@@ -63,9 +74,11 @@ static std::vector<std::vector<std::vector<C>>> fft3() {
     out.push_back(std::move(M));
   }
   std::vector<std::vector<C>> br(N, std::vector<C>(N));
+  size_t bits = 0;
+  for (size_t m = N; m > 1; m >>= 1) ++bits;
   for (size_t k = 0; k < N; ++k) {
     size_t q = 0;
-    for (int b = 0; b < 9; ++b) q = (q << 1) | ((k >> b) & 1);
+    for (size_t b = 0; b < bits; ++b) q = (q << 1) | ((k >> b) & 1);
     br[k][q] = 1.0;
   }
   std::vector<std::vector<C>> pack(N, std::vector<C>(N));
@@ -82,7 +95,7 @@ static std::vector<std::vector<C>> mel() {
   std::vector<std::vector<C>> M(N, std::vector<C>(N));
   for (int r = 0; r < 80; r++) {
     int lo = 1 + r * 3, mid = lo + 3, hi = mid + 3;
-    for (int k = lo; k < hi && k < 257; k++)
+    for (int k = lo; k < hi && k < static_cast<int>(N); k++)
       M[r][k] = (k <= mid) ? double(k - lo) / (mid - lo)
                            : double(hi - k) / (hi - mid);
   }
@@ -94,15 +107,6 @@ static std::vector<std::vector<C>> dct() {
     for (int n = 0; n < 80; n++)
       M[k][n] = cos(M_PI * k * (n + .5) / 80);
   return M;
-}
-static void probe(const CryptoContext<DCRTPoly> &cc, const CT &ct,
-                  const PrivateKey<DCRTPoly> &sk, const char *n) {
-  Plaintext p;
-  cc->Decrypt(ct, sk, &p);
-  p->SetLength(4);
-  auto v = p->GetCKKSPackedValue();
-  printf("%s level=%zu s0=(%.5g,%.5g) s1=(%.5g,%.5g)\n", n, ct->GetLevel(),
-         v[0].real(), v[0].imag(), v[1].real(), v[1].imag());
 }
 static void probe_rmse(const CryptoContext<DCRTPoly> &cc, const CT &ct,
                        const PrivateKey<DCRTPoly> &sk,
@@ -180,24 +184,6 @@ static CT mv(const CryptoContext<DCRTPoly> &cc, CT x,
   cc->RescaleInPlace(acc);
   return acc;
 }
-static CT mv_signed(const CryptoContext<DCRTPoly> &cc, CT x,
-                    const std::vector<Plaintext> &pts,
-                    const std::vector<int> &ds, int offset) {
-  CT acc;
-  bool first = true;
-  for (int d : ds) {
-    CT rot = d ? cc->EvalRotate(x, d) : x;
-    CT term = cc->EvalMult(rot, pts[d + offset]);
-    if (first) {
-      acc = term;
-      first = false;
-    } else {
-      cc->EvalAddInPlace(acc, term);
-    }
-  }
-  cc->RescaleInPlace(acc);
-  return acc;
-}
 static void mul_i_inplace(CT &ct) {
   auto &cv = ct->GetElements();
   auto ep = cv[0].GetParams();
@@ -215,8 +201,16 @@ int main() {
   CCParams<CryptoContextCKKSRNS> p;
   p.SetMultiplicativeDepth(20);
   p.SetScalingModSize(59);
+#ifdef E52_SMALL
+  p.SetRingDim(1 << 15);
+#else
   p.SetRingDim(1 << 16);
+#endif
+#ifdef E52_SMALL
+  p.SetSecurityLevel(HEStd_NotSet);
+#else
   p.SetSecurityLevel(HEStd_128_classic);
+#endif
   p.SetScalingTechnique(FIXEDMANUAL);
   p.SetCKKSDataType(COMPLEX);
   auto cc = GenCryptoContext(p);
@@ -225,10 +219,17 @@ int main() {
   auto kp = cc->KeyGen();
   cc->EvalMultKeyGen(kp.secretKey);
   std::vector<int32_t> rk;
-  for (int i = 1; i < (int)N; i++)
-    rk.push_back(i);
-  for (int i = 1; i <= 12; ++i)
-    rk.push_back(-i);
+  auto add_rk = [&](int32_t r) {
+    if (r != 0 && std::find(rk.begin(), rk.end(), r) == rk.end())
+      rk.push_back(r);
+  };
+  // BSGS uses baby steps 1..MV_N1-1 and giant steps that are multiples of
+  // MV_N1.  DCT additionally uses its signed direct-rotation offsets.
+  for (int32_t i = 1; i < static_cast<int32_t>(MV_N1); ++i) add_rk(i);
+  for (int32_t i = static_cast<int32_t>(MV_N1); i < static_cast<int32_t>(N);
+       i += static_cast<int32_t>(MV_N1))
+    add_rk(i);
+  add_rk(-80);
   cc->EvalRotateKeyGen(kp.secretKey, rk);
   uint32_t cj = 2 * cc->GetRingDimension() - 1;
   auto ck = cc->EvalAutomorphismKeyGen(kp.secretKey, {cj});
@@ -239,8 +240,8 @@ int main() {
     for (size_t h = 0; h < 2; ++h)
       for (size_t i = 0; i < WIN; i++)
         x[b * BLOCK + h * N + i] =
-            C(.001 * sin(.01 * i + .07 * b),
-              .001 * cos(.013 * i + .11 * b));
+            C(INPUT_GAIN * .001 * sin(.01 * i + .07 * b),
+              INPUT_GAIN * .001 * cos(.013 * i + .11 * b));
   auto ct = cc->Encrypt(kp.publicKey, cc->MakeCKKSPackedPlaintext(x));
   auto F = fft3();
   auto P = proj(), B = mel(), D = dct();
@@ -275,22 +276,19 @@ int main() {
   std::vector<std::vector<Plaintext>> fps;
   for (auto &M : F) fps.push_back(enc_bsgs(M));
   auto mp = enc_bsgs(B);
-  std::vector<int> dct_ds;
-  std::vector<Plaintext> dct_direct(N);
-  for (int d = -12; d <= 79; ++d) {
-    int dm = (d + static_cast<int>(N)) % static_cast<int>(N);
-    if (std::find(dct_ds.begin(), dct_ds.end(), dm) == dct_ds.end())
-      dct_ds.push_back(dm);
-    std::vector<C> q(S);
-    for (size_t b = 0; b < BLOCKS; ++b)
-      for (size_t h = 0; h < 2; ++h)
-        for (size_t r = 0; r < N; ++r) {
-          int n = static_cast<int>(r) + d;
-          if (n >= 0 && n < static_cast<int>(N))
-            q[b * BLOCK + h * N + r] = D[r][n];
-        }
-    dct_direct[dm] = cc->MakeCKKSPackedPlaintext(q);
-  }
+  // Mel produces 80 meaningful channels per lane.  Reserve the following
+  // 80 slots in the same lane for the imaginary component so both real
+  // components can share one Chebyshev evaluation.
+  std::vector<C> mel_mask_v(S);
+  for (size_t b = 0; b < BLOCKS; ++b)
+    for (size_t h = 0; h < 2; ++h) {
+      const size_t base = b * BLOCK + h * N;
+      for (size_t r = 0; r < 80; ++r) {
+        mel_mask_v[base + r] = C(1.0, 0.0);
+      }
+    }
+  auto mel_mask = cc->MakeCKKSPackedPlaintext(mel_mask_v);
+  auto dct_pts = enc_bsgs(D);
   auto fn = [](double z) { return std::pow(std::max(z, 0.0), .25); };
   std::vector<C> ey(N);
   for (size_t r = 0; r < N; r++)
@@ -319,7 +317,7 @@ int main() {
     e_mi_real[r] = e_mi[r].real();
   }
   auto ptxt_fn = [&](const std::vector<double>& in) {
-    return EvalChebyshevFunctionPtxt(fn, in, 0, 1, 63);
+    return EvalChebyshevFunctionPtxt(fn, in, CHEB_A, CHEB_B, 63);
   };
   auto e_cr_real = ptxt_fn(e_mr_real);
   auto e_ci_real = ptxt_fn(e_mi_real);
@@ -335,8 +333,22 @@ int main() {
   auto t0 = std::chrono::steady_clock::now();
   auto ts = t0;
   auto y = ct;
-  for (auto &fp : fps) y = mv(cc, y, fp);
+  const bool trace_proj = std::getenv("E52_PROJ_TRACE") != nullptr;
+  std::vector<double> proj_stage_s;
+  for (size_t i = 0; i < fps.size(); ++i) {
+    auto stage_t0 = std::chrono::steady_clock::now();
+    y = mv(cc, y, fps[i]);
+    if (trace_proj)
+      proj_stage_s.push_back(std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - stage_t0).count());
+  }
   double t_proj = std::chrono::duration<double>(std::chrono::steady_clock::now() - ts).count();
+  if (trace_proj) {
+    printf("projection_stage_s");
+    for (size_t i = 0; i < proj_stage_s.size(); ++i)
+      printf(" stage%zu=%.6f", i, proj_stage_s[i]);
+    printf(" total=%.6f\n", t_proj);
+  }
   if (!bench) probe_rmse(cc, y, kp.secretKey, ey, "projection");
   auto yc = conj(y);
   auto re = cc->EvalAdd(y, yc);
@@ -359,6 +371,11 @@ int main() {
   auto m = mv(cc, q, mp);
   double t_mel = std::chrono::duration<double>(std::chrono::steady_clock::now() - ts).count() - t_proj;
   if (!bench) probe_rmse(cc, m, kp.secretKey, e_m, "mel");
+  // Fold the output mask into the mel stage.  The mel matrix has only 80
+  // nonzero rows, but an explicit mask is still needed to suppress CKKS
+  // noise in unused slots before the later lane-local rotation.  Applying it
+  // once to m is equivalent to masking both split branches.
+  m = cc->EvalMult(m, mel_mask);
   auto mc = conj(m);
   auto mr = cc->EvalAdd(m, mc);
   auto mi = cc->EvalSub(m, mc);
@@ -367,8 +384,33 @@ int main() {
     c = c.Times(-1);
   if (!bench) probe_rmse(cc, mr, kp.secretKey, e_mr, "split2_re");
   if (!bench) probe_rmse(cc, mi, kp.secretKey, e_mi, "split2_im");
-  auto cr = cc->EvalChebyshevFunction(fn, mr, 0, 1, 63);
-  auto ci = cc->EvalChebyshevFunction(fn, mi, 0, 1, 63);
+
+  // Pack the two already-masked real ciphertexts into disjoint slot regions.
+  // The single rescale keeps the two branches aligned.
+  auto mr_packed = mr;
+  auto mi_packed = mi;
+  // OpenFHE's positive rotation maps output slot r to input slot r+offset;
+  // use -80 to move source slot r into destination slot r+80.
+  auto mi_shifted = cc->EvalRotate(mi_packed, -80);
+  auto packed_mel = cc->EvalAdd(mr_packed, mi_shifted);
+  cc->RescaleInPlace(packed_mel);
+  if (!bench) {
+    std::vector<C> packed_expected(N);
+    for (size_t r = 0; r < 80; ++r) {
+      packed_expected[r] = e_mr[r];
+      packed_expected[80 + r] = e_mi[r];
+    }
+    probe_rmse(cc, packed_mel, kp.secretKey, packed_expected, "packed_mel");
+  }
+  auto packed_cheb =
+      cc->EvalChebyshevFunction(fn, packed_mel, CHEB_A, CHEB_B, 63);
+
+  // Keep the real output in the original first-80 slots.  Extract the
+  // imaginary output from the shifted region and rotate it back.  With the
+  // OpenFHE rotation convention, +80 maps destination slot r to source slot
+  // r+80.  The next DCT linear transform performs the required rescale.
+  auto cr = packed_cheb;
+  auto ci = cc->EvalRotate(packed_cheb, 80);
   if (!bench) probe_rmse(cc, cr, kp.secretKey, e_cr, "cheb_re");
   if (!bench) probe_rmse(cc, ci, kp.secretKey, e_ci, "cheb_im");
   CT cii = std::make_shared<CiphertextImpl<DCRTPoly>>(*ci);
@@ -394,7 +436,7 @@ int main() {
     printf("dct_row k=%zu value_abs=%.6e abs_terms=%.6e ratio=%.6e\n",
            k, std::abs(sum), abs_sum, abs_sum / std::max(std::abs(sum), 1e-30));
   }
-  auto out = mv_signed(cc, c, dct_direct, dct_ds, 0);
+  auto out = mv(cc, c, dct_pts);
   double t_dct = std::chrono::duration<double>(std::chrono::steady_clock::now() - ts).count() - t_proj - t_mel - t_cheb;
   if (!bench) probe_rmse(cc, out, kp.secretKey, e_out, "dct_out");
   Plaintext c_dec;

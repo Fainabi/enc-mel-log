@@ -7,7 +7,23 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "build type" FORCE)
 endif()
 
-find_package(OpenFHE REQUIRED)
+set(OPENFHE_SOURCE_DIR "" CACHE PATH
+    "OpenFHE source tree (use with OPENFHE_BUILD_DIR for an uninstalled build)")
+set(OPENFHE_BUILD_DIR "" CACHE PATH
+    "OpenFHE build tree containing libOPENFHE*.so")
+
+if(OPENFHE_SOURCE_DIR AND OPENFHE_BUILD_DIR)
+  set(OpenFHE_INCLUDE
+      ${OPENFHE_SOURCE_DIR}/src/pke/include
+      ${OPENFHE_SOURCE_DIR}/src/core/include
+      ${OPENFHE_SOURCE_DIR}/src/binfhe/include)
+  set(OpenFHE_INCLUDE_PARENT ${OPENFHE_SOURCE_DIR}/src)
+  set(OpenFHE_LIBDIR ${OPENFHE_BUILD_DIR}/lib)
+  set(OpenFHE_SHARED_LIBRARIES OPENFHEpke OPENFHEcore OPENFHEbinfhe)
+  set(BASE_OPENFHE_VERSION "source-build")
+else()
+  find_package(OpenFHE REQUIRED)
+endif()
 
 # OpenFHEConfig.cmake exports OpenFHE_INCLUDE as the directory that *contains*
 # core/ pke/ binfhe/ (typically <prefix>/include/openfhe).  Two include roots are
@@ -24,6 +40,8 @@ include_directories(
   ${OpenFHE_INCLUDE}/pke
   ${OpenFHE_INCLUDE}/binfhe
   ${OpenFHE_INCLUDE_PARENT}
+  ${OPENFHE_BUILD_DIR}/src/core
+  ${OPENFHE_SOURCE_DIR}/third-party/cereal/include
 )
 link_directories(${OpenFHE_LIBDIR})
 

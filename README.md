@@ -390,7 +390,7 @@ scripts/run_bench.sh
 - **runtime_s 只覆盖密文求值**，不含建上下文、KeyGen、编码、加密、解密。
   `run_bench.sh` 额外记的 `wrapper_elapsed_s` 是整个进程的时间，两者差很多是正常的。
 - 更多背景（分段归一化、为什么 68.44 而不是别的数、哪些日志是弃用的探索记录）
-  见 `../results/benchmark_record.md`。
+  见本目录的 `BENCHMARK.md`。原始主结果日志仍在 `../results/cpp_complex_fft3_64.log`。
 
 `results/` 里其它 `.log` 大多是探索期的失败布局和不同帧数的变体，除了上面点名的
 几个，不要拿来当参照。
