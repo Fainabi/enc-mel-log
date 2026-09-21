@@ -22,8 +22,9 @@ static constexpr size_t ROT_STRIDE = LANES;
 // Mel energies in the current normalized input are concentrated near 1e-4.
 // Include a small negative margin for CKKS noise instead of approximating the
 // fourth root over [0, 1], where the approximation is poorly conditioned near 0.
-static constexpr double CHEB_A = -1.0e-2;
-static constexpr double CHEB_B = 1.0e-2;
+static constexpr double MEL_NORM = 1.0e-2;
+static constexpr double CHEB_A = -1.0e-3;
+static constexpr double CHEB_B = 1.0;
 static constexpr double INPUT_GAIN = 1.0;
 static std::vector<std::vector<C>> proj() {
   std::vector<std::vector<C>> M(N, std::vector<C>(N));
@@ -270,9 +271,15 @@ int main() {
   auto P = proj(), B = mel(), D = dct();
   P = F[0];
   for (size_t s = 1; s < F.size(); ++s) P = mm(F[s], P);
+  // Normalize the mel energy to a public unit interval before the nonlinear
+  // stage.  The inverse fourth-root scale is folded into the following DCT.
   for (auto &row : B)
     for (auto &z : row)
-      z *= 0.125;
+      z *= 0.125 / MEL_NORM;
+  const double root_scale = std::pow(MEL_NORM, 0.25);
+  for (auto &row : D)
+    for (auto &z : row)
+      z *= root_scale;
   auto enc_bsgs = [&](auto &M) {
     std::vector<Plaintext> v(N);
     for (size_t d = 0; d < N; d++) {
@@ -348,8 +355,8 @@ int main() {
     e_ci_real[r] = exact_root(e_mi_real[r]);
   }
   if (std::getenv("E52_CHEB_CHECK")) {
-    std::vector<double> probe = {0.0, 1.0e-6, 1.0e-4, 1.0e-3,
-                                 5.0e-3, 1.0e-2};
+    std::vector<double> probe = {0.0, 1.0e-4, 1.0e-3, 1.0e-2,
+                                 1.0e-1, 5.0e-1, 1.0};
     auto approx = EvalChebyshevFunctionPtxt(fn, probe, CHEB_A, CHEB_B, 63);
     for (size_t i = 0; i < probe.size(); ++i)
       printf("cheb_probe x=%.9g approx=%.9g exact=%.9g err=%.9g\n", probe[i],
