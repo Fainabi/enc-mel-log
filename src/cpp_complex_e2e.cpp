@@ -274,11 +274,11 @@ int main() {
   P = F[0];
   for (size_t s = 1; s < F.size(); ++s) P = mm(F[s], P);
   // Normalize the mel energy to a public unit interval before the nonlinear
-  // stage.  The inverse fourth-root scale is folded into the following DCT.
+  // stage.  The inverse power scale is folded into the following DCT.
   for (auto &row : B)
     for (auto &z : row)
       z *= 0.125 / MEL_NORM;
-  const double root_scale = std::pow(MEL_NORM, 0.25);
+  const double root_scale = std::pow(MEL_NORM, POWER_ALPHA);
   for (auto &row : D)
     for (auto &z : row)
       z *= root_scale;
