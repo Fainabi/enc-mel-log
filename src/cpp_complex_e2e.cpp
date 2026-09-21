@@ -25,6 +25,7 @@ static constexpr size_t ROT_STRIDE = LANES;
 static constexpr double MEL_NORM = 1.0e-2;
 static constexpr double CHEB_A = 0.0;
 static constexpr double CHEB_B = 1.0;
+static constexpr double POWER_OFFSET = 1.0e-4;
 static constexpr double INPUT_GAIN = 1.0;
 static std::vector<std::vector<C>> proj() {
   std::vector<std::vector<C>> M(N, std::vector<C>(N));
@@ -319,7 +320,9 @@ int main() {
     }
   auto mel_mask = cc->MakeCKKSPackedPlaintext(mel_mask_v);
   auto dct_pts = enc_bsgs(D);
-  auto fn = [](double z) { return std::pow(std::max(z, 0.0), .25); };
+  auto fn = [](double z) {
+    return std::pow(std::max(z + POWER_OFFSET, 0.0), .25);
+  };
   std::vector<C> ey(N);
   for (size_t r = 0; r < N; r++)
     for (size_t j = 0; j < N; j++)
@@ -347,7 +350,7 @@ int main() {
     e_mi_real[r] = e_mi[r].real();
   }
   auto exact_root = [](double z) {
-    return std::pow(std::max(z, 0.0), 0.25);
+    return std::pow(std::max(z + POWER_OFFSET, 0.0), 0.25);
   };
   std::vector<double> e_cr_real(N), e_ci_real(N);
   for (size_t r = 0; r < N; ++r) {
