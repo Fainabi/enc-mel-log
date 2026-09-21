@@ -25,7 +25,7 @@ static constexpr size_t ROT_STRIDE = LANES;
 static constexpr double MEL_NORM = 1.0e-2;
 static constexpr double CHEB_A = 0.0;
 static constexpr double CHEB_B = 1.0;
-static constexpr double POWER_ALPHA = 0.5;
+static constexpr double POWER_ALPHA = 0.75;
 static constexpr double POWER_OFFSET = 0.0;
 static constexpr double INPUT_GAIN = 1.0;
 static std::vector<std::vector<C>> proj() {
