@@ -372,6 +372,19 @@ int main() {
       }
       printf("cheb_degree=%u probe_maxerr=%.9g\n", degree, max_err);
     }
+    for (double alpha : {0.25, 0.5, 0.75, 1.0}) {
+      auto alpha_fn = [alpha](double z) {
+        return std::pow(std::max(z, 0.0), alpha);
+      };
+      std::vector<double> dense(1001);
+      for (size_t i = 0; i < dense.size(); ++i)
+        dense[i] = static_cast<double>(i) / 1000.0;
+      auto approx = EvalChebyshevFunctionPtxt(alpha_fn, dense, CHEB_A, CHEB_B, 63);
+      double max_err = 0.0;
+      for (size_t i = 0; i < dense.size(); ++i)
+        max_err = std::max(max_err, std::abs(approx[i] - alpha_fn(dense[i])));
+      printf("alpha=%.2f degree=63 dense_maxerr=%.9g\n", alpha, max_err);
+    }
     printf("mel_input_stats re_max=%.9g im_max=%.9g re_root_max=%.9g im_root_max=%.9g\n",
            *std::max_element(e_mr_real.begin(), e_mr_real.end()),
            *std::max_element(e_mi_real.begin(), e_mi_real.end()),
