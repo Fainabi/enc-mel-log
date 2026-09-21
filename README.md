@@ -18,8 +18,8 @@ Are Set by Dynamic Range, Not Approximability*（ICASSP 2027 投稿）里 C++ �
 ```
 
 其中 STFT 投影用三级 radix-8 分解（512 = 8³）加复数打包实现，模平方靠共轭
-automorphism 把实部虚部拆开后各自 `EvalSquare` 再重组，压缩器是 α=1/4 的幂函数在
-[0,1] 上的 63 次 Chebyshev 近似，mel 和 DCT 都是密文-明文线性映射，用
+automorphism 把实部虚部拆开后各自 `EvalSquare` 再重组。当前 degree-63 原型先将
+mel energy 公开归一化到 [0,1]，再用 α=3/4 的幂函数做 Chebyshev 近似；mel 和 DCT 都是密文-明文线性映射，用
 baby-step/giant-step 的对角线乘法实现。整条链跑完输出前 13 个 DCT 系数。
 
 **它做什么**：给出这条链在 CKKS 下的一个能跑通的实现，测它的耗时与它对同参数明文链
@@ -194,7 +194,7 @@ cmake --build build --target cpp_complex_e2e -j"$(nproc)"
 | | |
 | --- | --- |
 | 源码 | `src/cpp_complex_e2e.cpp` |
-| 跑什么 | 完整链：三级 radix-8 DFT 投影 → 共轭拆分实虚部 → 各自平方 → 重组 → mel → 再拆分 → 63 次 Chebyshev 的 u^(1/4) → 重组 → DCT，最后解密前 13 个系数并与明文参考比较 |
+| 跑什么 | 完整链：三级 radix-8 DFT 投影 → 共轭拆分实虚部 → 各自平方 → 重组 → mel → 归一化到 [0,1] → 再拆分 → 63 次 Chebyshev 的 u^(3/4) → 重组 → DCT，最后解密前 13 个系数并与浮点 reference 比较 |
 | 输入 | 无外部输入。程序内生成 64 帧合成复信号（`cpp_complex_e2e.cpp:238-243`），`x[b*1024+h*512+i] = (0.001*sin(0.01*i+0.07*b), 0.001*cos(0.013*i+0.11*b))`，i < 400 |
 | 环境变量 | `E52_BENCH`（`:236`）。设为任意非空值则跳过每一级的 RMSE probe，只留最终结果和分段计时 |
 | 输出 | 逐级 `stage <name> level=.. rmse=.. maxerr=..`；`input <name> min/max/mean/std/neg/over1` 统计；13 行 `dct_row k=..`；`runtime_s=.. level=.. rmse=.. maxerr=..`；`bench_stage_s projection=.. mel=.. cheb=.. dct=..`；4 行 `slot<i>=(..) exp=(..)` |
@@ -271,7 +271,7 @@ cmake --build build --target cpp_complex_e2e -j"$(nproc)"
 | | |
 | --- | --- |
 | 源码 | `src/cpp_real_dct.cpp` |
-| 跑什么 | 用 `SetCKKSDataType(REAL)`（`:20`，**8 个里唯一一个不用 COMPLEX 的**）跑「Chebyshev 压缩器 + DCT」这一段：对 80 个实数先做 63 次 Chebyshev 的 u^(1/4)，再用显式的「旋转 + 掩码对角线累加」做 DCT，解密前 13 个系数跟明文比 |
+| 跑什么 | 用 `SetCKKSDataType(REAL)`（`:20`，**8 个里唯一一个不用 COMPLEX 的**）跑「Chebyshev 压缩器 + DCT」这一段：对 80 个实数先做 63 次 Chebyshev 的 u^(1/4)，再用显式的「旋转 + 掩码对角线累加」做 DCT，解密前 13 个系数跟明文比。此项保留为历史对照，当前可用的 complex full-chain 原型见下一节 |
 | 输入 | 80 个实数，`x[i] = 0.08 + 0.0002*i`（`:31-32`） |
 | 输出 | 一行 `real_dct level=.. rmse=.. maxerr=.. s0=.. exp=.. s1=.. exp=..` |
 | 耗时 | 估：分钟量级。depth 20 / N=2^16 + 511 个旋转密钥 |
@@ -299,10 +299,10 @@ cmake --build build --target cpp_complex_e2e -j"$(nproc)"
 | radix-8 分组 | 3 组，每组 3 级蝶形 | `:54-57` | 9 级 radix-2 蝶形按 3 级一组合并成 1 个矩阵，等价于三级 radix-8。加上最后的「位反转 + 复数转实数交织」矩阵（`:65-78`），共 4 个明文矩阵 |
 | mel 滤波器数 | **80** | `:83` | `for (int r = 0; r < 80; r++)` |
 | mel 滤波器形状 | `lo = 1+3r, mid = lo+3, hi = mid+3` | `:84` | **均匀 3-bin 间隔的三角形，不是 HTK mel**。见 f 节 |
-| mel 全局缩放 | `× 0.125` | `:249-251` | 把 mel 输出压进 Chebyshev 的定义域 |
-| 压缩器指数 α | **0.25** | `:294` | `std::pow(std::max(z, 0.0), .25)`，即 u^(1/4) |
+| mel 全局缩放 | `× (0.125 / MEL_NORM)`，`MEL_NORM=1e-2` | `src/cpp_complex_e2e.cpp:280` | 将 mel 输出归一化到公开的 Chebyshev 定义域 |
+| 压缩器指数 α | **0.75** | `src/cpp_complex_e2e.cpp:28` | `std::pow(std::max(z, 0.0), POWER_ALPHA)`，即 u^(3/4) |
 | Chebyshev 次数 d | **63** | `:322`（明文参考）、`:370`、`:371`（密文） | 论文选定的工作点是 d=2047，**本源码是 63**。见 f 节 |
-| Chebyshev 定义域 | `[0, 1]` | `:322`、`:370-371` | |
+| Chebyshev 定义域 | `[0, 1]` | `src/cpp_complex_e2e.cpp:26-27` | |
 | DCT 保留系数 | **13** | `:93`（矩阵）、`:388`、`:414`、`:436`（比较与打印） | 13 × 80 的 DCT-II 核，`cos(πk(n+0.5)/80)`（`:95`） |
 | 旋转密钥 | 正向 1..511，反向 -1..-12 | `:228-232` | 反向那 12 个给 DCT 的有符号对角线用（d 从 -12 到 79，`:280`） |
 | 共轭 automorphism 索引 | `2*ringDim - 1` | `:233` | 实虚部拆分靠它 |
