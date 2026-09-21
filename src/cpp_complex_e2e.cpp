@@ -339,11 +339,14 @@ int main() {
     e_mr_real[r] = e_mr[r].real();
     e_mi_real[r] = e_mi[r].real();
   }
-  auto ptxt_fn = [&](const std::vector<double>& in) {
-    return EvalChebyshevFunctionPtxt(fn, in, CHEB_A, CHEB_B, 63);
+  auto exact_root = [](double z) {
+    return std::pow(std::max(z, 0.0), 0.25);
   };
-  auto e_cr_real = ptxt_fn(e_mr_real);
-  auto e_ci_real = ptxt_fn(e_mi_real);
+  std::vector<double> e_cr_real(N), e_ci_real(N);
+  for (size_t r = 0; r < N; ++r) {
+    e_cr_real[r] = exact_root(e_mr_real[r]);
+    e_ci_real[r] = exact_root(e_mi_real[r]);
+  }
   for (size_t r = 0; r < N; r++) {
     e_cr[r] = C(e_cr_real[r], 0.0);
     e_ci[r] = C(e_ci_real[r], 0.0);
@@ -510,8 +513,11 @@ int main() {
       er[r] += 8.0 * (B[r][j] * qr[j]).real();
       ei[r] += 8.0 * (B[r][j] * qi[j]).real();
     }
-  auto zr = ptxt_fn(er);
-  auto zi = ptxt_fn(ei);
+  std::vector<double> zr(N), zi(N);
+  for (size_t r = 0; r < N; ++r) {
+    zr[r] = exact_root(er[r]);
+    zi[r] = exact_root(ei[r]);
+  }
   std::vector<C> ec(N), eo(N);
   for (size_t r = 0; r < N; r++)
     ec[r] = C(zr[r], zi[r]);
