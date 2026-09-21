@@ -347,6 +347,19 @@ int main() {
     e_cr_real[r] = exact_root(e_mr_real[r]);
     e_ci_real[r] = exact_root(e_mi_real[r]);
   }
+  if (std::getenv("E52_CHEB_CHECK")) {
+    std::vector<double> probe = {0.0, 1.0e-6, 1.0e-4, 1.0e-3,
+                                 5.0e-3, 1.0e-2};
+    auto approx = EvalChebyshevFunctionPtxt(fn, probe, CHEB_A, CHEB_B, 63);
+    for (size_t i = 0; i < probe.size(); ++i)
+      printf("cheb_probe x=%.9g approx=%.9g exact=%.9g err=%.9g\n", probe[i],
+             approx[i], exact_root(probe[i]), approx[i] - exact_root(probe[i]));
+    printf("mel_input_stats re_max=%.9g im_max=%.9g re_root_max=%.9g im_root_max=%.9g\n",
+           *std::max_element(e_mr_real.begin(), e_mr_real.end()),
+           *std::max_element(e_mi_real.begin(), e_mi_real.end()),
+           *std::max_element(e_cr_real.begin(), e_cr_real.end()),
+           *std::max_element(e_ci_real.begin(), e_ci_real.end()));
+  }
   for (size_t r = 0; r < N; r++) {
     e_cr[r] = C(e_cr_real[r], 0.0);
     e_ci[r] = C(e_ci_real[r], 0.0);
