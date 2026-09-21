@@ -513,7 +513,10 @@ int main() {
   mul_i_inplace(cii);
   auto c = cc->EvalAdd(cr, cii);
   double t_cheb = std::chrono::duration<double>(std::chrono::steady_clock::now() - ts).count() - t_proj - t_mel;
-  if (!bench) probe_rmse(cc, c, kp.secretKey, e_c, "recombine_c");
+  if (!bench) {
+    std::vector<C> e_c_valid(e_c.begin(), e_c.begin() + 80);
+    probe_rmse(cc, c, kp.secretKey, e_c_valid, "recombine_c");
+  }
   auto mr_val = decrypt_values(cc, mr, kp.secretKey);
   auto mi_val = decrypt_values(cc, mi, kp.secretKey);
   auto c_val_pre = decrypt_values(cc, c, kp.secretKey);
