@@ -538,5 +538,13 @@ int main() {
     printf("slot%d=(%.6g,%.6g) exp=(%.6g,%.6g)\n", i, v[i * LANES].real(),
            v[i * LANES].imag(),
            eo[i].real(), eo[i].imag());
+  if (std::getenv("E52_DUMP_OUTPUT")) {
+    for (size_t i = 0; i < 13; ++i) {
+      const C got = v[i * LANES];
+      const double err = std::abs(got - eo[i]);
+      printf("decrypted[%zu]=(%.17g,%.17g) expected=(%.17g,%.17g) abs_err=%.9e\n",
+             i, got.real(), got.imag(), eo[i].real(), eo[i].imag(), err);
+    }
+  }
   return 0;
 }
