@@ -25,7 +25,7 @@ static constexpr size_t ROT_STRIDE = LANES;
 static constexpr double MEL_NORM = 1.0e-2;
 static constexpr double CHEB_A = 0.0;
 static constexpr double CHEB_B = 1.0;
-static constexpr double POWER_OFFSET = 1.0e-3;
+static constexpr double POWER_OFFSET = 0.0;
 static constexpr double INPUT_GAIN = 1.0;
 static std::vector<std::vector<C>> proj() {
   std::vector<std::vector<C>> M(N, std::vector<C>(N));
@@ -360,10 +360,18 @@ int main() {
   if (std::getenv("E52_CHEB_CHECK")) {
     std::vector<double> probe = {0.0, 1.0e-4, 1.0e-3, 1.0e-2,
                                  1.0e-1, 5.0e-1, 1.0};
-    auto approx = EvalChebyshevFunctionPtxt(fn, probe, CHEB_A, CHEB_B, 63);
-    for (size_t i = 0; i < probe.size(); ++i)
-      printf("cheb_probe x=%.9g approx=%.9g exact=%.9g err=%.9g\n", probe[i],
-             approx[i], exact_root(probe[i]), approx[i] - exact_root(probe[i]));
+    for (uint32_t degree : {63u, 127u, 255u, 511u, 1023u, 2047u}) {
+      auto approx = EvalChebyshevFunctionPtxt(fn, probe, CHEB_A, CHEB_B, degree);
+      double max_err = 0.0;
+      for (size_t i = 0; i < probe.size(); ++i) {
+        const double err = approx[i] - exact_root(probe[i]);
+        max_err = std::max(max_err, std::abs(err));
+        if (degree == 63)
+          printf("cheb_probe x=%.9g approx=%.9g exact=%.9g err=%.9g\n",
+                 probe[i], approx[i], exact_root(probe[i]), err);
+      }
+      printf("cheb_degree=%u probe_maxerr=%.9g\n", degree, max_err);
+    }
     printf("mel_input_stats re_max=%.9g im_max=%.9g re_root_max=%.9g im_root_max=%.9g\n",
            *std::max_element(e_mr_real.begin(), e_mr_real.end()),
            *std::max_element(e_mi_real.begin(), e_mi_real.end()),
