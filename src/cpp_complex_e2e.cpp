@@ -503,8 +503,12 @@ int main() {
   // r+80.  The next DCT linear transform performs the required rescale.
   auto cr = packed_cheb;
   auto ci = cc->EvalRotate(packed_cheb, 80 * static_cast<int>(ROT_STRIDE));
-  if (!bench) probe_rmse(cc, cr, kp.secretKey, e_cr, "cheb_re");
-  if (!bench) probe_rmse(cc, ci, kp.secretKey, e_ci, "cheb_im");
+  if (!bench) {
+    std::vector<C> e_cr_valid(e_cr.begin(), e_cr.begin() + 80);
+    std::vector<C> e_ci_valid(e_ci.begin(), e_ci.begin() + 80);
+    probe_rmse(cc, cr, kp.secretKey, e_cr_valid, "cheb_re");
+    probe_rmse(cc, ci, kp.secretKey, e_ci_valid, "cheb_im");
+  }
   CT cii = std::make_shared<CiphertextImpl<DCRTPoly>>(*ci);
   mul_i_inplace(cii);
   auto c = cc->EvalAdd(cr, cii);
