@@ -185,7 +185,7 @@ cmake --build build --target cpp_complex_e2e -j"$(nproc)"
 
 ## d) 8 个可执行文件各是干什么的
 
-以下全部按源码逐个核对。所有程序 **都不读任何输入文件**，输入在程序内部生成；
+以下全部按源码逐个核对。除主程序可选的 binary waveform 入口外，输入在程序内部生成；
 所有输出都走 stdout。「耗时」一栏里，密文求值时间有日志佐证的地方给了实测值，
 其余是按参数（密钥生成规模、明文矩阵预计算规模）给的量级判断，标为「估」。
 
@@ -195,8 +195,8 @@ cmake --build build --target cpp_complex_e2e -j"$(nproc)"
 | --- | --- |
 | 源码 | `src/cpp_complex_e2e.cpp` |
 | 跑什么 | 完整链：三级 radix-8 DFT 投影 → 共轭拆分实虚部 → 各自平方 → 重组 → mel → 归一化到 [0,1] → 再拆分 → 63 次 Chebyshev 的 u^(3/4) → 重组 → DCT，最后解密前 13 个系数并与浮点 reference 比较 |
-| 输入 | 无外部输入。程序内生成 64 帧合成复信号（`cpp_complex_e2e.cpp:238-243`），`x[b*1024+h*512+i] = (0.001*sin(0.01*i+0.07*b), 0.001*cos(0.013*i+0.11*b))`，i < 400 |
-| 环境变量 | `E52_BENCH`（`:236`）。设为任意非空值则跳过每一级的 RMSE probe，只留最终结果和分段计时 |
+| 输入 | 默认生成 64 个合成 complex frame。设置 `E52_INPUT_BIN` 后读取 little-endian float32：`WIN*LANES` 个值表示 real frame，`2*WIN*LANES` 个值表示每个 complex slot 的 real/imag 两个 frame |
+| 环境变量 | `E52_BENCH` 跳过逐级 probe；`E52_INPUT_BIN` 使用外部 binary 输入；`E52_MEL_NORM_FILE` 读取 80 个公开 per-channel calibration scale；`E52_POWER_ALPHA`、`E52_POWER_OFFSET`、`E52_CHEB_DEGREE` 覆盖 nonlinear prototype 参数 |
 | 输出 | 逐级 `stage <name> level=.. rmse=.. maxerr=..`；`input <name> min/max/mean/std/neg/over1` 统计；13 行 `dct_row k=..`；`runtime_s=.. level=.. rmse=.. maxerr=..`；`bench_stage_s projection=.. mel=.. cheb=.. dct=..`；4 行 `slot<i>=(..) exp=(..)` |
 | 耗时 | **密文求值 43.800 s**（有日志：`../results/cpp_complex_fft3_64.log`）。这个数字只覆盖求值，**不含** 建上下文、KeyGen（511 个正向 + 12 个反向旋转密钥 + 共轭 automorphism 密钥）、以及 CPU 侧的 512×512 稠密复矩阵连乘（`mm()`，`:29-36`，共调用 13 次）与全部明文对角线编码。整个进程的实际运行时间明显长于 43.8 s，本仓库没有测过这个总时间 |
 | 备注 | 输出的 `level=` 是 OpenFHE 的内部层索引，不是论文里说的「剩余层数」 |
@@ -325,11 +325,11 @@ cmake --build build --target cpp_complex_e2e -j"$(nproc)"
    `for (size_t i = 0; i < 13; i++)`（`:436`），不是全部 512 个输出槽，也不是
    32768 个槽。它衡量的是「实际关心的那 13 个 MFCC 系数」的偏差，不是整个密文的偏差。
 
-3. **计时和精度验证用的是合成正弦输入，不是真实语音。** 输入在 `:238-243` 生成，
-   是确定性的 sin/cos 组合，幅度固定在 0.001 量级。论文里 LibriSpeech 上的动态范围
-   和下游任务实验是另一套 Python 代码做的，跟本仓库的数字不能互相替换。
-   换句话说 `rmse=8.44e-03` 是「密文实现路径 vs 同参数明文实现路径」的一致性检查，
-   **不是任务精度**。
+3. **默认 benchmark 是合成输入；真实语音需要显式 calibration。** `E52_INPUT_BIN` 可以
+   注入之前工作的 LibriSpeech `dev-clean` frame，但真实 mel energy 的跨 channel 范围远大于
+   合成信号，必须使用同一公开数据上的 `E52_MEL_NORM_FILE`。当前 degree-63 原型在真实片段
+   上选 `alpha=0.99`、per-channel scale 和 `offset=1e-6` 时测得 endpoint RMSE
+   `8.32e-03`、max error `1.60e-02`；这只是前端一致性检查，不是下游任务精度。
 
 4. **radix-8 分解版的精度比非分解版差约四个半数量级。** 非分解（稠密投影）路径
    在 32 帧布局下测得 `rmse=2.377179e-07`（`../results/cpp_complex_32frame_bench.log`），
@@ -394,6 +394,31 @@ scripts/run_bench.sh
 
 `results/` 里其它 `.log` 大多是探索期的失败布局和不同帧数的变体，除了上面点名的
 几个，不要拿来当参照。
+
+### 真实语音 smoke benchmark
+
+之前工作的 LibriSpeech `dev-clean` 样本可按 128 个连续 frame 组织成一个
+`400 x 64` complex binary 输入。先用同一个输入生成 C++ projection 顺序下的公开
+calibration scale：
+
+```bash
+E52_INPUT_BIN=/path/libri_128frames_complex_f32.bin \
+E52_WRITE_MEL_NORMS=/path/mel_norms_cpp.txt \
+./build/cpp_complex_e2e
+```
+
+再运行真实输入 benchmark：
+
+```bash
+E52_BENCH=1 E52_POWER_ALPHA=0.99 E52_POWER_OFFSET=1e-6 \
+E52_MEL_NORM_FILE=/path/mel_norms_cpp.txt \
+E52_INPUT_BIN=/path/libri_128frames_complex_f32.bin \
+./build/cpp_complex_e2e
+```
+
+在 Xeon zpf 上该样本的记录为 `39.470 s`、`3.243 frame/s`，endpoint RMSE
+`8.32e-03`、max error `1.60e-02`。这个配置使用 `alpha=0.99` 是为了让 degree-63
+原型在真实 mel dynamic range 下稳定；它不能与论文中 `alpha=0.75` 的语义结果混写。
 
 ---
 

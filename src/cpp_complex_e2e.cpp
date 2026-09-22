@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <vector>
 using namespace lbcrypto;
 using C = std::complex<double>;
@@ -28,7 +29,10 @@ static const double MEL_NORM = [] {
 }();
 static constexpr double CHEB_A = 0.0;
 static constexpr double CHEB_B = 1.0;
-static constexpr double POWER_ALPHA = 0.75;
+static const double POWER_ALPHA = [] {
+  const char* s = std::getenv("E52_POWER_ALPHA");
+  return s ? std::strtod(s, nullptr) : 0.75;
+}();
 static const double POWER_OFFSET = [] {
   const char* s = std::getenv("E52_POWER_OFFSET");
   return s ? std::strtod(s, nullptr) : 0.0;
@@ -314,15 +318,46 @@ int main() {
   auto P = proj(), B = mel(), D = dct();
   P = F[0];
   for (size_t s = 1; s < F.size(); ++s) P = mm(F[s], P);
+  if (const char* norm_out = std::getenv("E52_WRITE_MEL_NORMS")) {
+    std::ofstream no(norm_out);
+    if (!no) return 2;
+    for (size_t r = 0; r < 80; ++r) {
+      double mx = 0.0;
+      for (size_t lane = 0; lane < LANES; ++lane) {
+        std::vector<C> fy(N);
+        for (size_t k = 0; k < N; ++k)
+          for (size_t j = 0; j < N; ++j)
+            fy[k] += P[k][j] * x[j * LANES + lane];
+        double er = 0.0, ei = 0.0;
+        for (size_t k = 0; k < N; ++k) {
+          er += B[r][k].real() * fy[k].real() * fy[k].real();
+          ei += B[r][k].real() * fy[k].imag() * fy[k].imag();
+        }
+        mx = std::max(mx, std::max(er, ei));
+      }
+      no << std::setprecision(17) << (1.25 * mx) << '\n';
+    }
+    return 0;
+  }
+  std::vector<double> mel_norm(N, MEL_NORM);
+  if (const char* norm_file = std::getenv("E52_MEL_NORM_FILE")) {
+    std::ifstream nf(norm_file);
+    for (size_t r = 0; r < 80; ++r) {
+      if (!(nf >> mel_norm[r]) || !(mel_norm[r] > 0.0)) {
+        std::fprintf(stderr, "failed to read 80 positive mel norms from %s\n",
+                     norm_file);
+        return 2;
+      }
+    }
+  }
   // Normalize the mel energy to a public unit interval before the nonlinear
   // stage.  The inverse power scale is folded into the following DCT.
-  for (auto &row : B)
-    for (auto &z : row)
-      z *= 0.125 / MEL_NORM;
-  const double root_scale = std::pow(MEL_NORM, POWER_ALPHA);
-  for (auto &row : D)
-    for (auto &z : row)
-      z *= root_scale;
+  for (size_t row = 0; row < B.size(); ++row)
+    for (auto &z : B[row])
+      z *= 0.125 / mel_norm[row];
+  for (size_t row = 0; row < D.size(); ++row)
+    for (size_t col = 0; col < D[row].size(); ++col)
+      D[row][col] *= std::pow(mel_norm[col], POWER_ALPHA);
   auto enc_bsgs = [&](auto &M) {
     std::vector<Plaintext> v(N);
     for (size_t d = 0; d < N; d++) {
@@ -363,7 +398,8 @@ int main() {
   auto mel_mask = cc->MakeCKKSPackedPlaintext(mel_mask_v);
   auto dct_pts = enc_bsgs(D);
   auto fn = [](double z) {
-    return std::pow(std::max(z + POWER_OFFSET, 0.0), POWER_ALPHA);
+    // POWER_OFFSET, when enabled, has already been added to the ciphertext.
+    return std::pow(std::max(z, 0.0), POWER_ALPHA);
   };
   std::vector<C> ey(N);
   for (size_t r = 0; r < N; r++)
