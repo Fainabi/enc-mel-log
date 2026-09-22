@@ -6,6 +6,7 @@
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <vector>
 using namespace lbcrypto;
 using C = std::complex<double>;
@@ -19,14 +20,23 @@ static constexpr size_t BLOCKS = FRAMES / 2;
 static constexpr size_t MV_N1 = 16;
 static constexpr size_t LANES = FRAMES;
 static constexpr size_t ROT_STRIDE = LANES;
-// Mel energies in the current normalized input are concentrated near 1e-4.
-// Include a small negative margin for CKKS noise instead of approximating the
-// fourth root over [0, 1], where the approximation is poorly conditioned near 0.
-static constexpr double MEL_NORM = 1.0e-2;
+// The default synthetic input produces normalized mel values well below one.
+// Real-data calibration can override this public normalization at runtime.
+static const double MEL_NORM = [] {
+  const char* s = std::getenv("E52_MEL_NORM");
+  return s ? std::strtod(s, nullptr) : 1.0e-2;
+}();
 static constexpr double CHEB_A = 0.0;
 static constexpr double CHEB_B = 1.0;
 static constexpr double POWER_ALPHA = 0.75;
-static constexpr double POWER_OFFSET = 0.0;
+static const double POWER_OFFSET = [] {
+  const char* s = std::getenv("E52_POWER_OFFSET");
+  return s ? std::strtod(s, nullptr) : 0.0;
+}();
+static const uint32_t CHEB_DEGREE = [] {
+  const char* s = std::getenv("E52_CHEB_DEGREE");
+  return s ? static_cast<uint32_t>(std::strtoul(s, nullptr, 10)) : 63u;
+}();
 static constexpr double INPUT_GAIN = 1.0;
 static std::vector<std::vector<C>> proj() {
   std::vector<std::vector<C>> M(N, std::vector<C>(N));
@@ -259,15 +269,46 @@ int main() {
   auto ck = cc->EvalAutomorphismKeyGen(kp.secretKey, {cj});
   size_t S = cc->GetRingDimension() / 2;
   const bool bench = std::getenv("E52_BENCH") != nullptr;
+  const char* input_bin = std::getenv("E52_INPUT_BIN");
   std::vector<C> x(S);
-  for (size_t b = 0; b < BLOCKS; ++b)
-    for (size_t h = 0; h < 2; ++h)
-      for (size_t i = 0; i < WIN; i++)
-        x[i * LANES + 2 * b + h] =
-            std::getenv("E52_REAL_INPUT")
-                ? C(INPUT_GAIN * .001 * sin(.01 * i + .07 * (4 * b + 2 * h)), 0.0)
-                : C(INPUT_GAIN * .001 * sin(.01 * i + .07 * (4 * b + 2 * h)),
-                    INPUT_GAIN * .001 * cos(.013 * i + .11 * (4 * b + 2 * h + 1)));
+  if (input_bin) {
+    std::ifstream in(input_bin, std::ios::binary);
+    in.seekg(0, std::ios::end);
+    const std::streamoff bytes = in.tellg();
+    in.seekg(0, std::ios::beg);
+    const size_t real_count = WIN * LANES;
+    const size_t complex_count = 2 * real_count;
+    if (bytes != static_cast<std::streamoff>(real_count * sizeof(float)) &&
+        bytes != static_cast<std::streamoff>(complex_count * sizeof(float))) {
+      std::fprintf(stderr, "failed to read E52_INPUT_BIN=%s (%zu or %zu float32 values expected)\n",
+                   input_bin, real_count, complex_count);
+      return 2;
+    }
+    const bool complex_input =
+        bytes == static_cast<std::streamoff>(complex_count * sizeof(float));
+    std::vector<float> raw(complex_input ? complex_count : real_count);
+    in.read(reinterpret_cast<char*>(raw.data()),
+            static_cast<std::streamsize>(raw.size() * sizeof(float)));
+    if (!in) return 2;
+    for (size_t i = 0; i < WIN; ++i)
+      for (size_t lane = 0; lane < LANES; ++lane)
+        x[i * LANES + lane] = complex_input
+            ? C(INPUT_GAIN * raw[2 * (i * LANES + lane)],
+                INPUT_GAIN * raw[2 * (i * LANES + lane) + 1])
+            : C(INPUT_GAIN * raw[i * LANES + lane], 0.0);
+    std::printf("input_source=%s path=%s samples=%zu lanes=%zu\n",
+                complex_input ? "complex_binary" : "real_binary",
+                input_bin, raw.size(), LANES);
+  } else {
+    for (size_t b = 0; b < BLOCKS; ++b)
+      for (size_t h = 0; h < 2; ++h)
+        for (size_t i = 0; i < WIN; i++)
+          x[i * LANES + 2 * b + h] =
+              std::getenv("E52_REAL_INPUT")
+                  ? C(INPUT_GAIN * .001 * sin(.01 * i + .07 * (4 * b + 2 * h)), 0.0)
+                  : C(INPUT_GAIN * .001 * sin(.01 * i + .07 * (4 * b + 2 * h)),
+                      INPUT_GAIN * .001 * cos(.013 * i + .11 * (4 * b + 2 * h + 1)));
+  }
   auto ct = cc->Encrypt(kp.publicKey, cc->MakeCKKSPackedPlaintext(x));
   auto F = fft3();
   auto P = proj(), B = mel(), D = dct();
@@ -485,6 +526,14 @@ int main() {
   // use -80 to move source slot r into destination slot r+80.
   auto mi_shifted = cc->EvalRotate(mi_packed, -80 * static_cast<int>(ROT_STRIDE));
   auto packed_mel = cc->EvalAdd(mr_packed, mi_shifted);
+  if (POWER_OFFSET != 0.0) {
+    // EvalChebyshev is applied to every slot, including masked/unused ones.
+    // Shift all slots so CKKS noise around zero cannot be evaluated outside
+    // the public approximation interval.
+    std::vector<C> offset_v(S, C(POWER_OFFSET, 0.0));
+    auto offset_pt = cc->MakeCKKSPackedPlaintext(offset_v);
+    packed_mel = cc->EvalAdd(packed_mel, offset_pt);
+  }
   cc->RescaleInPlace(packed_mel);
   if (!bench) {
     std::vector<C> packed_expected(N);
@@ -495,7 +544,7 @@ int main() {
     probe_rmse(cc, packed_mel, kp.secretKey, packed_expected, "packed_mel");
   }
   auto packed_cheb =
-      cc->EvalChebyshevFunction(fn, packed_mel, CHEB_A, CHEB_B, 63);
+      cc->EvalChebyshevFunction(fn, packed_mel, CHEB_A, CHEB_B, CHEB_DEGREE);
 
   // Keep the real output in the original first-80 slots.  Extract the
   // imaginary output from the shifted region and rotate it back.  With the
