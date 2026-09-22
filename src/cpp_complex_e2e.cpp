@@ -587,9 +587,12 @@ int main() {
   auto packed_cheb =
       cc->EvalChebyshevFunction(fn, packed_mel, CHEB_A, CHEB_B, CHEB_DEGREE);
   if (ZERO_CENTER) {
-    const double p0 = EvalChebyshevFunctionPtxt(
-        fn, std::vector<double>{0.0}, CHEB_A, CHEB_B, CHEB_DEGREE)[0];
-    std::vector<C> zero_v(S, C(p0, 0.0));
+    // The ciphertext was shifted by POWER_OFFSET before evaluation.  Remove
+    // the exact shift image, not the polynomial's extrapolated value at zero;
+    // for x^(1/4), the latter has a large endpoint approximation error.
+    const double offset_image =
+        std::pow(std::max(POWER_OFFSET, 0.0), POWER_ALPHA);
+    std::vector<C> zero_v(S, C(offset_image, 0.0));
     auto zero_pt = cc->MakeCKKSPackedPlaintext(zero_v);
     packed_cheb = cc->EvalSub(packed_cheb, zero_pt);
   }
