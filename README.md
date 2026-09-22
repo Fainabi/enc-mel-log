@@ -327,9 +327,9 @@ cmake --build build --target cpp_complex_e2e -j"$(nproc)"
 
 3. **默认 benchmark 是合成输入；真实语音需要显式 calibration。** `E52_INPUT_BIN` 可以
    注入之前工作的 LibriSpeech `dev-clean` frame，但真实 mel energy 的跨 channel 范围远大于
-   合成信号，必须使用同一公开数据上的 `E52_MEL_NORM_FILE`。当前 degree-63 原型在真实片段
-   上选 `alpha=0.99`、per-channel scale 和 `offset=1e-6` 时测得 endpoint RMSE
-   `8.32e-03`、max error `1.60e-02`；这只是前端一致性检查，不是下游任务精度。
+   合成信号，必须使用同一公开数据上的 `E52_MEL_NORM_FILE`。当前保持 `alpha=0.75`，
+   使用 per-channel scale、zero-centering 和 degree-511 时测得 endpoint RMSE
+   `7.66e-03`、max error `1.81e-02`；这只是前端一致性检查，不是下游任务精度。
 
 4. **radix-8 分解版的精度比非分解版差约四个半数量级。** 非分解（稠密投影）路径
    在 32 帧布局下测得 `rmse=2.377179e-07`（`../results/cpp_complex_32frame_bench.log`），
@@ -410,15 +410,17 @@ E52_WRITE_MEL_NORMS=/path/mel_norms_cpp.txt \
 再运行真实输入 benchmark：
 
 ```bash
-E52_BENCH=1 E52_POWER_ALPHA=0.99 E52_POWER_OFFSET=1e-6 \
+E52_BENCH=1 E52_ZERO_CENTER=1 E52_CHEB_DEGREE=511 \
+E52_POWER_ALPHA=0.75 E52_POWER_OFFSET=1e-6 \
 E52_MEL_NORM_FILE=/path/mel_norms_cpp.txt \
 E52_INPUT_BIN=/path/libri_128frames_complex_f32.bin \
 ./build/cpp_complex_e2e
 ```
 
-在 Xeon zpf 上该样本的记录为 `39.470 s`、`3.243 frame/s`，endpoint RMSE
-`8.32e-03`、max error `1.60e-02`。这个配置使用 `alpha=0.99` 是为了让 degree-63
-原型在真实 mel dynamic range 下稳定；它不能与论文中 `alpha=0.75` 的语义结果混写。
+在 Xeon zpf 上该样本的记录为 `42.993 s`、`2.977 frame/s`，endpoint RMSE
+`7.66e-03`、max error `1.81e-02`。这个配置保持论文的 `alpha=0.75`；相比默认
+degree-63 synthetic prototype，它额外使用 degree-511 和 zero-centering 来处理真实
+mel dynamic range。
 
 ---
 

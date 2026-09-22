@@ -41,6 +41,7 @@ static const uint32_t CHEB_DEGREE = [] {
   const char* s = std::getenv("E52_CHEB_DEGREE");
   return s ? static_cast<uint32_t>(std::strtoul(s, nullptr, 10)) : 63u;
 }();
+static const bool ZERO_CENTER = std::getenv("E52_ZERO_CENTER") != nullptr;
 static constexpr double INPUT_GAIN = 1.0;
 static std::vector<std::vector<C>> proj() {
   std::vector<std::vector<C>> M(N, std::vector<C>(N));
@@ -428,7 +429,11 @@ int main() {
     e_mi_real[r] = e_mi[r].real();
   }
   auto exact_root = [](double z) {
-    return std::pow(std::max(z + POWER_OFFSET, 0.0), POWER_ALPHA);
+    const double shifted = std::pow(std::max(z + POWER_OFFSET, 0.0),
+                                    POWER_ALPHA);
+    return ZERO_CENTER
+        ? shifted - std::pow(std::max(POWER_OFFSET, 0.0), POWER_ALPHA)
+        : shifted;
   };
   std::vector<double> e_cr_real(N), e_ci_real(N);
   for (size_t r = 0; r < N; ++r) {
@@ -581,6 +586,13 @@ int main() {
   }
   auto packed_cheb =
       cc->EvalChebyshevFunction(fn, packed_mel, CHEB_A, CHEB_B, CHEB_DEGREE);
+  if (ZERO_CENTER) {
+    const double p0 = EvalChebyshevFunctionPtxt(
+        fn, std::vector<double>{0.0}, CHEB_A, CHEB_B, CHEB_DEGREE)[0];
+    std::vector<C> zero_v(S, C(p0, 0.0));
+    auto zero_pt = cc->MakeCKKSPackedPlaintext(zero_v);
+    packed_cheb = cc->EvalSub(packed_cheb, zero_pt);
+  }
 
   // Keep the real output in the original first-80 slots.  Extract the
   // imaginary output from the shifted region and rotate it back.  With the
