@@ -32,7 +32,9 @@ def main():
                     help="directory containing sorted *.bin frame blocks")
     ap.add_argument("--output", required=True,
                     help=".npy output with shape [blocks,64,13,2]")
-    ap.add_argument("--workers", type=int, default=os.cpu_count() or 1)
+    # Each worker owns an OpenFHE context and key material; using every CPU
+    # thread would overcommit memory.  Increase explicitly after measuring.
+    ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--alpha", default="0.25")
     ap.add_argument("--offset", default="1e-4")
     ap.add_argument("--degree", default="511")
