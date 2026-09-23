@@ -654,6 +654,27 @@ int main() {
   cc->Decrypt(out, kp.secretKey, &dec);
   dec->SetLength(S);
   auto v = dec->GetCKKSPackedValue();
+  if (const char* output_bin = std::getenv("E52_OUTPUT_BIN")) {
+    // Layout: lane-major [LANES][13][real, imag], float32.  Keeping both
+    // components preserves the complex-packing result for downstream code;
+    // real-input callers will observe an approximately zero imaginary part.
+    std::ofstream out_file(output_bin, std::ios::binary);
+    if (!out_file) {
+      std::fprintf(stderr, "failed to open E52_OUTPUT_BIN=%s\n", output_bin);
+      return 2;
+    }
+    for (size_t lane = 0; lane < LANES; ++lane)
+      for (size_t k = 0; k < 13; ++k) {
+        const C z = v[k * LANES + lane];
+        const float pair[2] = {static_cast<float>(z.real()),
+                               static_cast<float>(z.imag())};
+        out_file.write(reinterpret_cast<const char*>(pair), sizeof(pair));
+      }
+    if (!out_file) {
+      std::fprintf(stderr, "failed to write E52_OUTPUT_BIN=%s\n", output_bin);
+      return 2;
+    }
+  }
   std::vector<double> qr(N), qi(N);
   for (size_t r = 0; r < N; r++) {
     qr[r] = ey[r].real() * ey[r].real();
